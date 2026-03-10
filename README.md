@@ -167,10 +167,10 @@ unity-ai-agent/
 
 添加新工具
 
-1.在 tools/unity\_tools.py 中用 @registry.register 装饰器注册新函数。
-2.函数需返回 {"action": "工具名", "params": {...}} 格式。
-3.在 Unity 端的 ExecuteTool 中添加对应的 case 实现具体操作。
-4.重新运行程序，新工具会自动出现在 LLM 的工具列表中。
+1. 在 tools/unity\_tools.py 中用 @registry.register 装饰器注册新函数。
+2. 函数需返回 {"action": "工具名", "params": {...}} 格式。
+3. 在 Unity 端的 ExecuteTool 中添加对应的 case 实现具体操作。
+4. 重新运行程序，新工具会自动出现在 LLM 的工具列表中。
 
 修改知识库
 
