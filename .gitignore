@@ -1,0 +1,30 @@
+# Python 缓存文件
+__pycache__/
+*.pyc
+
+# 环境变量文件（包含 API Key）
+.env
+
+# 日志文件
+*.log
+llm_log.txt
+
+# 虚拟环境
+venv/
+env/
+.env/
+
+# IDE 配置文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 模型文件（如果你有本地模型，可以忽略整个文件夹）
+/model/embedding/
+Unity/Script/Rotate.cs.meta
+Unity/Script/StatesController.cs.meta
