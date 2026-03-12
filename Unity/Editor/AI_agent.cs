@@ -527,7 +527,7 @@ public class AgentToolWindow : EditorWindow
                 {
                     // 创建材质对象
                     Material mat = new Material(Shader.Find("Standard"));
-                    mat.name = name;
+                    mat.name = args.material_name;
 
                     // 处理颜色
                     if (!string.IsNullOrEmpty(args.colorHex))
@@ -547,7 +547,7 @@ public class AgentToolWindow : EditorWindow
                         AssetDatabase.CreateFolder("Assets", "Material");
                     }
 
-                    string assetPath = $"{folderPath}/{name}.mat";
+                    string assetPath = $"{folderPath}/{args.material_name}.mat";
 
                     // 
                     if (File.Exists(assetPath))
