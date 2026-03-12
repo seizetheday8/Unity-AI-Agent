@@ -1,8 +1,8 @@
 # Unity AI Agent：用自然语言指挥 Unity 编辑器
 
-Python
-Unity
-License
+![Python](https://img.shields.io/badge/Python-3.9+-blue)
+![Unity](https://img.shields.io/badge/Unity-2020.3+-lightgrey)
+![License](https://img.shields.io/badge/License-MIT-green)
 
 ## 📖 项目简介
 
