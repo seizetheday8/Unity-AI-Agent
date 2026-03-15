@@ -400,21 +400,29 @@ public class AgentToolWindow : EditorWindow
                     else
                         obj= GameObject.CreatePrimitive(PrimitiveType.Cube);
 
+
                     if (!string.IsNullOrEmpty(args.object_name))
                         obj.name = args.object_name;
 
-                    if (args.localScale != null && args.localScale.Length == 3)
+                    string msg = $"执行成功: 创建了 {obj.name} 物体";
+
+                    if (args.localScale != null && args.localScale.Length == 3) {
                         obj.transform.localScale = new Vector3(args.localScale[0], args.localScale[1], args.localScale[2]);
-
-                    if (args.position != null && args.position.Length == 3)
+                        msg += $"，大小 [{args.localScale[0]:F2}, {args.localScale[1]:F2}, {args.localScale[2]:F2}]";
+                    }
+                    if (args.position != null && args.position.Length == 3) {
                         obj.transform.position = new Vector3(args.position[0], args.position[1], args.position[2]);
-
+                        msg += $"，位置 [{args.position[0]:F2}, {args.position[1]:F2}, {args.position[2]:F2}]";
+                    }
                     if (args.localRotation != null && args.localRotation.Length == 3)
+                    {
                         obj.transform.localRotation = Quaternion.Euler(args.localRotation[0], args.localRotation[1], args.localRotation[2]);
-              
+                        msg += $"，旋转 [{args.localRotation[0]:F2}°, {args.localRotation[1]:F2}°, {args.localRotation[2]:F2}°]";
+                    }
                     // 选中创建完的物体
-                    Selection.activeGameObject = obj; 
-                    return (true, $"执行成功: 创建了 {obj.name} 物体",null);
+                    Selection.activeGameObject = obj;
+
+                    return (true, msg, null);
                 }
             case "modify_object":
                 {
@@ -422,24 +430,32 @@ public class AgentToolWindow : EditorWindow
                     if (obj == null)
                         return (false, $"执行失败: 未找到物体 '{args.object_name}'", null);
 
+
                     if (args.new_object_name != null)
                     {
                         obj.name = args.new_object_name;
                     }
 
-                    if (args.position != null && args.position.Length == 3)
-                        obj.transform.position = new Vector3(args.position[0], args.position[1], args.position[2]);
+                    string msg = $"执行成功: 已修改物体 '{args.object_name}'名称为'{args.new_object_name}'";
 
-                    if (args.localRotation != null && args.localRotation.Length == 3)
-                        obj.transform.localRotation = Quaternion.Euler(args.localRotation[0], args.localRotation[1], args.localRotation[2]);
-
-                    if (args.localScale != null && args.localScale.Length == 3)
+                    if (args.localScale != null && args.localScale.Length == 3) {
                         obj.transform.localScale = new Vector3(args.localScale[0], args.localScale[1], args.localScale[2]);
+                        msg += $"，大小 [{args.localScale[0]:F2}, {args.localScale[1]:F2}, {args.localScale[2]:F2}]";
+                    }
+                    if (args.position != null && args.position.Length == 3) {
+                        obj.transform.position = new Vector3(args.position[0], args.position[1], args.position[2]);
+                        msg += $"，位置 [{args.position[0]:F2}, {args.position[1]:F2}, {args.position[2]:F2}]";
+                    }
+                    if (args.localRotation != null && args.localRotation.Length == 3)
+                    {
+                        obj.transform.localRotation = Quaternion.Euler(args.localRotation[0], args.localRotation[1], args.localRotation[2]);
+                        msg += $"，旋转 [{args.localRotation[0]:F2}°, {args.localRotation[1]:F2}°, {args.localRotation[2]:F2}°]";
+                    }
 
                     // 选中修改后的物体
                     Selection.activeGameObject = obj;
 
-                    return (true, $"执行成功: 已修改物体 '{obj.name}'", null);
+                    return (true, msg, null);
                 }
             case "delete_object":
                 {
@@ -467,22 +483,30 @@ public class AgentToolWindow : EditorWindow
 
                     GameObject clone = GameObject.Instantiate(original);
 
-                    // 复制
-                    if (args.position != null && args.position.Length == 3)
-                        clone.transform.position = new Vector3(args.position[0], args.position[1], args.position[2]);
-
-                    if (args.localRotation != null && args.localRotation.Length == 3)
-                        clone.transform.localRotation = Quaternion.Euler(args.localRotation[0], args.localRotation[1], args.localRotation[2]);
-
-                    if (args.localScale != null && args.localScale.Length == 3)
-                        clone.transform.localScale = new Vector3(args.localScale[0], args.localScale[1], args.localScale[2]);
-
                     // 设置新名称
                     if (!string.IsNullOrEmpty(args.new_object_name))
                         clone.name = args.new_object_name;
 
+                    string msg = $"执行成功: 已复制物体 '{args.object_name}',新物体'{args.new_object_name}'";
+
+                    if (args.localScale != null && args.localScale.Length == 3)
+                    {
+                        clone.transform.localScale = new Vector3(args.localScale[0], args.localScale[1], args.localScale[2]);
+                        msg += $"，新大小 [{args.localScale[0]:F2}, {args.localScale[1]:F2}, {args.localScale[2]:F2}]";
+                    }
+                    if (args.position != null && args.position.Length == 3)
+                    {
+                        clone.transform.position = new Vector3(args.position[0], args.position[1], args.position[2]);
+                        msg += $"，新位置 [{args.position[0]:F2}, {args.position[1]:F2}, {args.position[2]:F2}]";
+                    }
+                    if (args.localRotation != null && args.localRotation.Length == 3)
+                    {
+                        clone.transform.localRotation = Quaternion.Euler(args.localRotation[0], args.localRotation[1], args.localRotation[2]);
+                        msg += $"，新旋转 [{args.localRotation[0]:F2}°, {args.localRotation[1]:F2}°, {args.localRotation[2]:F2}°]";
+                    }
+
                     Selection.activeGameObject = clone;
-                    return (true, $"已复制物体 '{args.object_name}' 为 '{clone.name}'", null);
+                    return (true, msg, null);
                 }
             case "get_selected_object":
                 {
