@@ -1,9 +1,11 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,15 +13,34 @@ using Unity.Plastic.Newtonsoft.Json;
 using Unity.Plastic.Newtonsoft.Json.Linq;
 using UnityEditor; // 引入编辑器命名空间
 using UnityEngine;
+using UnityEngine.Networking;
 
+public static class UnityWebRequestAwaiterExtension
+{
+    public static TaskAwaiter<UnityWebRequest.Result> GetAwaiter(this UnityWebRequestAsyncOperation asyncOp)
+    {
+        var tcs = new TaskCompletionSource<UnityWebRequest.Result>();
+        asyncOp.completed += _ =>
+        {
+            // 请求完成后，通过 asyncOp.webRequest 获取结果
+            if (asyncOp.webRequest != null)
+            {
+                tcs.SetResult(asyncOp.webRequest.result);
+            }
+            else
+            {
+                // 正常情况下 webRequest 应该存在，但以防万一
+                tcs.SetResult(UnityWebRequest.Result.ConnectionError);
+            }
+        };
+        return tcs.Task.GetAwaiter();
+    }
+}
 public class AgentToolWindow : EditorWindow
 {
-    private TcpListener server;
-    private CancellationTokenSource cts;
-    private bool isServerRunning = false;
-
-    // 当前的连接流
-    private NetworkStream currentStream;
+    private string apiUrl = "http://localhost:8000/execute";
+    private List<Dictionary<string, object>> history = new List<Dictionary<string, object>>();
+    private bool isProcessing = false;                    // 防止重复请求
 
     // 输入框的内容
     private string inputText = "";
@@ -58,17 +79,9 @@ public class AgentToolWindow : EditorWindow
     [Serializable]
     public class ToolCall
     {
+        public string id;
         public string name;       // create_object
         public string arguments;  // 注意：这里是 JSON 字符串，需要二次解析
-    }
-
-    [Serializable]
-    public class ToolResult
-    {
-        public string name;
-        public string status; // "success" 或 "error"
-        public string message;
-        public object data;   // 可选附加数据
     }
 
     [Serializable]
@@ -80,15 +93,6 @@ public class AgentToolWindow : EditorWindow
         public string content;
     }
 
-    [Serializable]
-    public class UnityFeedback
-    {
-        public string session_id; // 必须与收到的指令 ID 一致
-        public string status;     // "success" 或 "error"
-        public string message;    // 详细信息
-        public string data;
-    }
-
     [MenuItem("Tools/AI Agent")]
     public static void ShowWindow()
     {
@@ -97,37 +101,21 @@ public class AgentToolWindow : EditorWindow
     private void OnEnable()
     {
         // 窗口打开时自动启动
-        StartServer();
+        LoadHistory();
     }
     private void OnDisable()
     {
-        StopServer();
+        SaveHistory();
     }
-
     // 绘制窗口UI
     private void OnGUI()
     {
         // === 顶部控制栏 ===
         GUILayout.Label("AI Agent 服务状态", EditorStyles.boldLabel);
+        GUI.color = Color.green;
+        GUILayout.Label($"API 地址: {apiUrl}", GUILayout.Height(20));
+        GUI.color = Color.white;
 
-        if (isServerRunning)
-        {
-            GUI.color = Color.green;
-            GUILayout.Label("状态: 运行中...", GUILayout.Height(20));
-        }
-        else
-        {
-            GUI.color = Color.red;
-            GUILayout.Label("状态: 已停止", GUILayout.Height(20));
-        }
-        GUI.color = Color.white; // 重置颜色
-
-        // 按钮
-        if (GUILayout.Button(isServerRunning ? "停止服务" : "启动服务", GUILayout.Height(20)))
-        {
-            if (isServerRunning) StopServer();
-            else StartServer();
-        }
 
         GUILayout.Space(10);
 
@@ -179,64 +167,32 @@ public class AgentToolWindow : EditorWindow
             inputText = EditorGUILayout.TextField(inputText, GUILayout.Height(25));
 
             // 2. 发送按钮
-            GUI.enabled = (currentStream != null);
+            //GUI.enabled = (currentStream != null);
             if (GUILayout.Button("发送", GUILayout.Width(60), GUILayout.Height(25)))
             {
-                SendToPython();
+                SendToAgent(inputText);
             }
             GUI.enabled = true;
         }
-        EditorGUILayout.EndHorizontal();
-
         // 3. 捕捉回车键
         if (Event.current.isKey && Event.current.keyCode == KeyCode.Return)
         {
             if (GUI.GetNameOfFocusedControl() == "ChatInput" && !string.IsNullOrEmpty(inputText))
             {
-                SendToPython();
+                SendToAgent(inputText);
                 Event.current.Use(); // 防止换行
             }
         }
-
-        // 清空日志按钮
-        if (GUILayout.Button("清空日志"))
+        if (GUILayout.Button("清空日志", GUILayout.Height(20)))
         {
             messageLog.Clear();
         }
-    }
-
-    private void StartServer()
-    {
-        if (isServerRunning) return;
-
-        try
+        if (GUILayout.Button("清空会话", GUILayout.Height(20)))
         {
-            cts = new CancellationTokenSource();
-            server = new TcpListener(IPAddress.Parse("127.0.0.1"), 12345);
-            server.Start();
-            isServerRunning = true;
-
-            // 记录一条系统日志
-            AddLog("服务器已启动 (端口 12345)");
-
-            _ = ListenForClientsAsync(cts.Token);
+            ClearHistory();
         }
-        catch (Exception e)
-        {
-            AddLog($"启动失败: {e.Message}");
-        }
+        EditorGUILayout.EndHorizontal();
     }
-    private void StopServer()
-    {
-        if (!isServerRunning) return;
-
-        cts?.Cancel();
-        server?.Stop();
-        isServerRunning = false;
-
-        AddLog("服务器已停止");
-    }
-
     // 辅助方法：线程安全地添加日志
     private void AddLog(string message)
     {
@@ -250,125 +206,6 @@ public class AgentToolWindow : EditorWindow
 
         // 请求重绘窗口
         EditorApplication.delayCall += () => Repaint();
-    }
-
-    private async Task ListenForClientsAsync(CancellationToken token)
-    {
-        try
-        {
-            while (!token.IsCancellationRequested)
-            {
-                TcpClient client = await server.AcceptTcpClientAsync();
-                AddLog("Python 客户端已连接");
-
-                _ = HandleClientAsync(client, token);
-            }
-        }
-        catch (ObjectDisposedException) {
-            AddLog("连接已关闭，停止接收");
-        }
-        catch (Exception e)
-        {
-            AddLog($"监听异常: {e.Message}");
-        }
-    }
-
-    private async Task HandleClientAsync(TcpClient client, CancellationToken token)
-    {
-        currentStream = client.GetStream();
-
-        AddLog("Python 已连接，现在可以双向交互了。");
-
-        using (currentStream)
-        {
-            byte[] buffer = new byte[4096];
-            while (!token.IsCancellationRequested)
-            {
-                int bytesRead = await currentStream.ReadAsync(buffer, 0, buffer.Length, token);
-                if (bytesRead == 0) break;
-
-                string json = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                
-                string feedbackJson = ExecuteCommand(json,currentStream);
-
-                // 反馈
-                if (!string.IsNullOrEmpty(feedbackJson))
-                {
-                    byte[] feedbackData = Encoding.UTF8.GetBytes(feedbackJson + "\n");
-                    await currentStream.WriteAsync(feedbackData, 0, feedbackData.Length, token);
-                }
-            }
-        }
-
-        currentStream = null;
-        AddLog("Python 断开连接");
-    }
-
-    // 命令执行
-    string ExecuteCommand(string json,NetworkStream stream)
-    {
-        try
-        {
-            var response = JsonUtility.FromJson<AgentResponse>(json);
-            string sessionId = response.session_id;
-
-            // 核心改动：循环执行所有工具调用
-            if (response.tool_calls != null && response.tool_calls.Count > 0)
-            {
-                bool allSuccess = true;
-                List<string> resultMessages = new List<string>();
-                List<ToolResult> results = new List<ToolResult>();
-
-                foreach (var call in response.tool_calls)
-                {
-                    AgentCommand cmdArgs = JsonUtility.FromJson<AgentCommand>(call.arguments);
-                    var (success, msg, data) = ExecuteTool(call.name, cmdArgs);
-                    AddLog(msg);
-                    if (!success) allSuccess=false;
-                    results.Add(new ToolResult
-                    {
-                        name = call.name,
-                        status = success ? "success" : "error",
-                        message = msg,
-                        data = data
-                    });
-                }
-                string combinedMessage = string.Join("; ", results.Select(r => r.message));
-                return JsonUtility.ToJson(new UnityFeedback
-                {
-                    session_id = sessionId,
-                    status = allSuccess ? "success" : "error",
-                    message = combinedMessage,
-                    data = JsonConvert.SerializeObject(results)
-                });
-
-            }
-            else
-            {
-                // 普通聊天或最终服务
-                if (!string.IsNullOrEmpty(response.content))
-                {
-                    AddLog($"[Agent] {response.content}");
-                }
-                return JsonUtility.ToJson(new UnityFeedback
-                {
-                    session_id = sessionId,
-                    status = "success",
-                    message = "已收到消息",
-                    data = null
-                });
-            }
-        }
-        catch (Exception e)
-        {
-            return JsonUtility.ToJson(new UnityFeedback
-            {
-                session_id = "unknown",
-                status = "error",
-                message = $"解析异常: {e.Message}",
-                data = null
-            });
-        }
     }
     // 工具调用 
     (bool success, string message,object data) ExecuteTool(string toolName, AgentCommand args)
@@ -661,6 +498,10 @@ public class AgentToolWindow : EditorWindow
                             Debug.LogWarning($"参数解析失败: {e.Message}");
                         }
                     }
+                    else
+                    {
+                            return (false, "未提供任何初始属性", null);
+                    }
                     return (true, $"执行成功: 已为物体 '{args.object_name}' 挂载脚本 '{args.script_name}'", null);
                 }
             case "modify_script_properties":
@@ -752,34 +593,130 @@ public class AgentToolWindow : EditorWindow
                 return (false, $"执行失败:  未知工具: {toolName}", null);
         }
     }
-
-    private void SendToPython()
+    private void SendToAgent(string userInput)
     {
-        if (string.IsNullOrEmpty(inputText)) return;
-        if (currentStream == null)
+        if (string.IsNullOrEmpty(userInput)) return;
+        if (isProcessing)
         {
-            AddLog("未连接，无法发送");
+            AddLog("正在处理上一轮，请稍后再试。");
             return;
         }
 
+        // 将用户输入加入历史
+        history.Add(new Dictionary<string, object> { ["role"] = "user", ["content"] = userInput });
+        SaveHistory();
+        AddLog($"[Unity] {userInput}");
+        inputText = "";
+
+        _ = SendRequestAsync();
+    }
+    private async Task SendRequestAsync()
+    {
+        if (isProcessing) return;
+        isProcessing = true;
+
+        string historyJson = JsonConvert.SerializeObject(history);
+        for (int i = 0; i < history.Count; i++)
+        {
+            var item = history[i];
+        }
         try
         {
-            // 1. 把文字转成字节流
-            byte[] data = Encoding.UTF8.GetBytes(inputText + "\n");
+            var requestBody = new { history = history };
+            string json = JsonConvert.SerializeObject(requestBody);
+            using (UnityWebRequest req = new UnityWebRequest(apiUrl, "POST"))
+            {
+                byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(json);
+                req.uploadHandler = new UploadHandlerRaw(bodyRaw);
+                req.downloadHandler = new DownloadHandlerBuffer();
+                req.SetRequestHeader("Content-Type", "application/json");
 
-            // 2. 发送
-            currentStream.WriteAsync(data, 0, data.Length);
+                var result = await req.SendWebRequest();
 
-            // 3. 在自己的窗口里显示一下（留底）
-            AddLog($"[Unity] {inputText}");
+                if (result != UnityWebRequest.Result.Success)
+                {
+                    AddLog($"HTTP 错误: {req.error}");
+                    return;
+                }
+                AgentResponse resp = JsonConvert.DeserializeObject<AgentResponse>(req.downloadHandler.text);
+                if (resp == null) { AddLog("响应解析失败"); return; }
 
-            // 4. 清空输入框
-            inputText = "";
+                ProcessResponse(resp);
+            }
         }
-        catch (Exception e)
+        catch (Exception e) { AddLog($"异常: {e.Message}"); }
+        finally { isProcessing = false; }
+    }
+    // 处理响应（工具调用或最终回复）
+    private void ProcessResponse(AgentResponse resp)
+    {
+        if (resp.tool_calls != null && resp.tool_calls.Count > 0)
         {
-            AddLog($"❌ 发送失败: {e.Message}");
+            // 1. 添加 assistant 消息（带 tool_calls）
+            var toolCallsList = new List<Dictionary<string, object>>();
+            foreach (var tc in resp.tool_calls)
+            {
+                toolCallsList.Add(new Dictionary<string, object>
+                {
+                    ["id"] = tc.id,
+                    ["name"] = tc.name,
+                    ["arguments"] = tc.arguments
+                });
+            }
+            history.Add(new Dictionary<string, object> { ["role"] = "assistant", ["tool_calls"] = toolCallsList });
+            SaveHistory();
+
+            foreach (var call in resp.tool_calls)
+            {
+                AgentCommand args = JsonUtility.FromJson<AgentCommand>(call.arguments);
+                var (success, msg, data) = ExecuteTool(call.name, args);
+                AddLog(msg);
+
+                var toolMsg = new Dictionary<string, object>
+                {
+                    ["role"] = "tool",
+                    ["tool_call_id"] = call.id,
+                    ["name"] = call.name,
+                    ["content"] = JsonConvert.SerializeObject(new { status = success ? "success" : "error", message = msg, data = data })
+                };
+                history.Add(toolMsg);
+            }
+            SaveHistory();
+
+            if (history.Count > 30) { AddLog("达到最大步骤限制，停止。"); return; }
+            isProcessing = false;
+            _ = SendRequestAsync(); // 继续下一轮
         }
+        else if (!string.IsNullOrEmpty(resp.content))
+        {
+            AddLog($"[Agent] {resp.content}");
+            history.Add(new Dictionary<string, object> { ["role"] = "assistant", ["content"] = resp.content });
+            SaveHistory();
+        }
+        else AddLog("响应内容为空");
+    }
+    private void LoadHistory()
+    {
+        if (EditorPrefs.HasKey("Agent_History"))
+        {
+            string json = EditorPrefs.GetString("Agent_History");
+            history = JsonConvert.DeserializeObject<List<Dictionary<string, object>>>(json) ?? new List<Dictionary<string, object>>();
+        }
+        else
+        {
+            history = new List<Dictionary<string, object>>();
+        }
+    }
+    private void SaveHistory()
+    {
+        string json = JsonConvert.SerializeObject(history);
+        EditorPrefs.SetString("Agent_History", json);
+    }
+    private void ClearHistory()
+    {
+        history.Clear();
+        EditorPrefs.DeleteKey("Agent_History");
+        AddLog("会话历史已清空");
     }
 }
 
