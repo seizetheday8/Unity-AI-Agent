@@ -36,7 +36,6 @@ tools_schema = None
 
 def load_rag_and_tools():
     global retri, tools_schema
-    # 注意路径需要根据实际部署调整
     retri = init_vectorstore(PROJECT_RULES_PATH)
     tools_schema = export_tools_json()
 
@@ -71,7 +70,7 @@ def convert_to_api_messages(conversation: list[Message]) -> list[dict]:
             tool_msg = {
                 "role": "tool",
                 "tool_call_id": msg["tool_call_id"],
-                "content": msg["content"]  # 已经是字符串
+                "content": msg["content"]
             }
             api_messages.append(tool_msg)
             continue
@@ -90,12 +89,8 @@ def plan_next_step(history_messages: List[Dict], step_count: int = 0) -> AgentRe
         user_input = history_messages[-1].get("content", "")
         current_messages = history_messages[:-1] + [{"role": "user", "content": user_input}]
 
-    # 调用 LLM 获取响应（复用 call_llm 逻辑，但需要适配无桥接的情况）
-    # 注意：call_llm 原本依赖 retri 和 tools_schema，这里可以直接用
-    # 需要将 call_llm 提取到此处或单独模块
+    # 调用 LLM 获取响应
     response = call_llm(current_messages, retri, tools_schema)
-
-    # 注意：call_llm 内部已经处理了重试和异常，返回 AgentResponse
     return response
 
 def call_llm(messages: list, retri, tools_schema, max_retries=MAX_RETRIES) -> AgentResponse:
