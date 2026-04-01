@@ -121,7 +121,7 @@ Unity 端：打开 Unity 编辑器，菜单栏点击 Tools → AI Agent，在打
 Python 端：在终端运行：
 
 ```bash
-python src/Socket.py
+python src/main.py
 ```
 
 开始对话：在 Unity 窗口的输入框中输入指令，例如“创建一个红色立方体”，观察结果。
@@ -141,7 +141,8 @@ python src/Socket.py
 💡 所有指令均支持自然语言变体，系统会自动理解意图。
 
 📁 项目结构  
-```text  
+
+```text
 unity-ai-agent/
 ├── src/ # Python 端核心代码
 │   ├── main.py                             # FastAPI 入口（HTTP 服务）
@@ -149,7 +150,7 @@ unity-ai-agent/
 │   ├── rag.py                              # RAG 初始化与检索
 │   └── protocol.py                         # Pydantic 数据模型
 ├── tools/                                  # 工具注册与实现
-│   ├── \_\_init\_\_.py
+│   ├── __init__.py
 │   ├── export_docs.py                      # 生成工具列表供 LLM 使用
 │   ├── registry.py                         # 工具注册中心
 │   └── unity_tools.py                      # 具体工具函数

@@ -6,15 +6,13 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional,Any
 import uuid
 from agent_planner import plan_next_step, load_rag_and_tools
-from src.protocol import ToolCall
+from src.protocol import ToolCall, AgentResponse
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时执行：加载 RAG 和工具（同步函数，直接调用即可）
     load_rag_and_tools()
     yield
-    # 关闭时执行：无需清理（或可添加）
 
 app = FastAPI(title="Unity AI Agent API",lifespan=lifespan)
 
@@ -48,7 +46,7 @@ def stringify_tool_arguments(tool_calls: List[Any]) -> List[Any]:
     return new_tool_calls
 
 class ExecuteRequest(BaseModel):
-    session_id: Optional[str] = None   # 可选，用于关联会话（若客户端自己维护历史可忽略）
+    session_id: Optional[str] = None
     #user_input: str
     history: List[Dict] = []           # 历史消息，由客户端维护并传递
 
@@ -62,12 +60,12 @@ async def execute(req: ExecuteRequest):
         response = plan_next_step(req.history)
         print(f"用户输入:{user_input}")
         # 构建返回的字典
-        result = {
-            "session_id": response.session_id,
-            "thoughts": response.thoughts,
-            "content": response.content,
-            "tool_calls": None
-        }
+        result = AgentResponse(
+            session_id = response.session_id,
+            thoughts = response.thoughts,
+            content = response.content,
+            tool_calls = None
+        )
         if response.tool_calls:
             result["tool_calls"] = stringify_tool_arguments(response.tool_calls)
             print(f"返回数据: {result}")
