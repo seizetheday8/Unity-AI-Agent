@@ -1,11 +1,13 @@
 import os
+from pathlib import Path
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
 # 本地模型路径
-EMBEDDING_MODEL_PATH = os.path.abspath("../model/embedding/paraphrase-multilingual-MiniLM-L12-v2")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+EMBEDDING_MODEL_PATH = str(PROJECT_ROOT / "model" / "embedding" / "paraphrase-multilingual-MiniLM-L12-v2")
 
 
 # 初始化向量库

@@ -2,8 +2,11 @@ import json
 import os
 import time
 import uuid
+import re
+from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
+from collections import OrderedDict
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -11,15 +14,17 @@ from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from src.protocol import AgentResponse, UserMessage, AssistantMessage, ToolMessage, ToolCallData,Message
+#from tools.export_docs import export_tools_json
 from tools.export_docs import export_tools_json
-from rag import init_vectorstore  # 你的向量库初始化函数，建议移到独立模块
+from src.rag import init_vectorstore  # 你的向量库初始化函数，建议移到独立模块
 
 # 配置
 MAX_RETRIES = 3
 THINKING_MODE = True
 MODEL_NAME = "qwen3.5-flash"
 
-PROJECT_RULES_PATH = "../knowledge/project_rules.md"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_RULES_PATH = str(PROJECT_ROOT / "knowledge" / "project_rules.md")
 
 load_dotenv()
 qwen_api_key = os.getenv("QWEN_API_KEY")
@@ -33,6 +38,40 @@ client = OpenAI(
 # 初始化全局对象（服务启动时加载）
 retri = None
 tools_schema = None
+
+# 指令级模板缓存（缓存工具结构，不缓存具体参数）
+TEMPLATE_CACHE_MAX_ENTRIES = 500
+instruction_template_cache: OrderedDict[str, List[str]] = OrderedDict()
+template_cache_hit_total = 0
+template_cache_miss_total = 0
+template_cache_hit_latency_ms_sum = 0.0
+template_cache_miss_latency_ms_sum = 0.0
+
+
+def _normalize_instruction_signature(text: str) -> str:
+    """归一化用户指令，用于模板级缓存命中。"""
+    normalized = (text or "").strip().lower()
+    normalized = re.sub(r"-?\d+(?:\.\d+)?", "<num>", normalized)
+    normalized = re.sub(r"#[0-9a-f]{3,8}", "<color>", normalized)
+    normalized = re.sub(r"\([^)]*\)", "(<args>)", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
+
+
+def get_template_cache_metrics() -> Dict[str, Any]:
+    total = template_cache_hit_total + template_cache_miss_total
+    hit_rate = (template_cache_hit_total / total) if total else 0.0
+    hit_avg_latency = (template_cache_hit_latency_ms_sum / template_cache_hit_total) if template_cache_hit_total else 0.0
+    miss_avg_latency = (template_cache_miss_latency_ms_sum / template_cache_miss_total) if template_cache_miss_total else 0.0
+    return {
+        "template_cache_hit_total": template_cache_hit_total,
+        "template_cache_miss_total": template_cache_miss_total,
+        "template_cache_hit_rate": round(hit_rate, 4),
+        "template_cache_entries": len(instruction_template_cache),
+        "template_cache_max_entries": TEMPLATE_CACHE_MAX_ENTRIES,
+        "template_cache_hit_avg_latency_ms": round(hit_avg_latency, 2),
+        "template_cache_miss_avg_latency_ms": round(miss_avg_latency, 2),
+    }
 
 def load_rag_and_tools():
     global retri, tools_schema
@@ -94,9 +133,20 @@ def plan_next_step(history_messages: List[Dict], step_count: int = 0) -> AgentRe
     return response
 
 def call_llm(messages: list, retri, tools_schema, max_retries=MAX_RETRIES) -> AgentResponse:
+    global template_cache_hit_total, template_cache_miss_total
+    global template_cache_hit_latency_ms_sum, template_cache_miss_latency_ms_sum
+    started_at = time.perf_counter()
 
     # 历史消息
     user_content = messages[-1]["content"] if messages[-1]["role"] == "user" else ""
+    signature = _normalize_instruction_signature(user_content)
+    cached_tool_sequence = instruction_template_cache.get(signature)
+    if cached_tool_sequence:
+        template_cache_hit_total += 1
+        # LRU: 命中后刷新为最近使用
+        instruction_template_cache.move_to_end(signature)
+    else:
+        template_cache_miss_total += 1
 
     relevant_rules_docs = retri.invoke(user_content)
 
@@ -154,6 +204,15 @@ def call_llm(messages: list, retri, tools_schema, max_retries=MAX_RETRIES) -> Ag
         - 任务完成：所有步骤成功后，直接输出content（不再调用工具）。
         """
 
+    if cached_tool_sequence:
+        system_content += f"""
+
+        # 指令模板缓存提示（仅作结构参考）
+        本次命中了历史工具结构缓存，可优先参考以下工具序列：
+        {json.dumps(cached_tool_sequence, ensure_ascii=False)}
+        注意：这是参考信息，参数仍需根据当前输入重新生成。
+        """
+
     base_messages = messages  # 原始的对话历史（不含反馈）
     feedbacks = []  # 存储错误反馈
 
@@ -185,7 +244,18 @@ def call_llm(messages: list, retri, tools_schema, max_retries=MAX_RETRIES) -> Ag
             #     f.write(f"--- {timestamp} 响应 ---\n")
             #     f.write(json_str + "\n")
 
-            return AgentResponse.model_validate_json(json_str)
+            parsed_response = AgentResponse.model_validate_json(json_str)
+            if parsed_response.tool_calls:
+                instruction_template_cache[signature] = [tc.name for tc in parsed_response.tool_calls]
+                instruction_template_cache.move_to_end(signature)
+                while len(instruction_template_cache) > TEMPLATE_CACHE_MAX_ENTRIES:
+                    instruction_template_cache.popitem(last=False)
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            if cached_tool_sequence:
+                template_cache_hit_latency_ms_sum += elapsed_ms
+            else:
+                template_cache_miss_latency_ms_sum += elapsed_ms
+            return parsed_response
 
         except Exception as e:
             print(f"⚠️ 第{attempt + 1}次调用失败: {e}")
@@ -200,7 +270,23 @@ def call_llm(messages: list, retri, tools_schema, max_retries=MAX_RETRIES) -> Ag
                 time.sleep(1)
             else:
                 print("❌ 多次重试失败，返回错误响应")
+                elapsed_ms = (time.perf_counter() - started_at) * 1000
+                if cached_tool_sequence:
+                    template_cache_hit_latency_ms_sum += elapsed_ms
+                else:
+                    template_cache_miss_latency_ms_sum += elapsed_ms
                 return AgentResponse(
                     thoughts="LLM连续多次响应异常。",
                     content="指令生成失败，请稍后重试或简化请求。"
                 )
+
+    # 理论上不会走到这里，仅用于静态检查与兜底保护。
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    if cached_tool_sequence:
+        template_cache_hit_latency_ms_sum += elapsed_ms
+    else:
+        template_cache_miss_latency_ms_sum += elapsed_ms
+    return AgentResponse(
+        thoughts="未命中有效返回路径。",
+        content="指令生成失败，请稍后重试。"
+    )

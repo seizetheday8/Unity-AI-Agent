@@ -8,20 +8,18 @@
 
 Unity AI Agent 是一个基于 LLM 的 Unity 编辑器 Agent。
 后端采用 Python + FastAPI 提供无状态 REST API，前端为 Unity 编辑器扩展，通过 HTTP 执行编辑器操作。
-系统内置“规划 → 执行 → 反馈”的 Agent 循环，支持多步任务拆解与 RAG 知识库，用于动态适配项目规范。
+系统使用 LangGraph 编排“检索 → 规划 → 校验 → 收尾”流程，配合 RAG 知识库动态适配项目规范，并通过原生 tool calling 调用 Unity 工具。
 
 ## ✨ 核心功能
 
-- ✅ **用自然语言创建/修改物体**（支持 Cube、Sphere、Cylinder、Capsule、Plane、Quad）
-- ✅ **创建并应用材质**（支持十六进制颜色）
-- ✅ **挂载已有脚本并修改其公共字段**
-- ✅ **复制物体及批量操作**（支持位置、旋转、缩放调整）
-- ✅ **多步任务自动规划**（例如“先创建立方体，再设置红色材质”）
-- ✅ **分批策略稳定处理大规模任务**（避免一次发送过多工具调用）
-- ✅ **RAG 知识库动态适配项目规范**（通过 `project_rules.md` 注入项目特定信息）
-- ✅ **基础错误恢复与重试机制**（支持网络超时、编译冲突等自动重试）
-- ✅ **HTTP 无状态架构**，Python 服务可独立部署，Unity 作为客户端通过 REST API 调用
-- ✅ **对话历史持久化**（Unity 端保存历史，编辑器编译后自动恢复）
+- ✅ **支持** 用自然语言创建/修改物体
+- ✅ **可实现** 材质创建、颜色设置与应用
+- ✅ **能够** 挂载已有脚本并修改其字段
+- ✅ **提供** 物体复制及批量操作能力
+- ✅ **尝试实现** 多步任务自动规划
+- ✅ **采用** 分批策略稳定处理大规模任务
+- ✅ **集成** RAG 知识库动态适配项目规范
+- ✅ **具有** 基础错误恢复与重试机制
 
 ---
 
@@ -30,10 +28,10 @@ Unity AI Agent 是一个基于 LLM 的 Unity 编辑器 Agent。
 
 | 部分           | 技术                                                                   |
 | ------------ | -------------------------------------------------------------------- |
-| **Python 端** | Python 3.9+, OpenAI (Qwen/DeepSeek API), LangChain, Chroma, Pydantic |
-| **Unity 端**  | C#, Unity Editor API, Newtonsoft.Json, UnityWebRequest               |
+| **Python 端** | Python 3.9+, FastAPI, LangGraph, OpenAI-compatible API, LangChain, Chroma, Pydantic |
+| **Unity 端**  | C#, Unity Editor API, Newtonsoft.Json                                 |
 | **通信**       | HTTP (REST API)，JSON 格式                                              |
-| **向量库**      | Chroma，嵌入模型 paraphrase-multilingual-MiniLM-L12-v2                    |
+| **向量库**      | Chroma，嵌入模型 paraphrase-multilingual-MiniLM-L12-v2                |
 
 
 ---
@@ -101,7 +99,7 @@ export HF\_ENDPOINT=https://hf-mirror.com
 
 ### 4 导入 Unity 端脚本
 
-将 Unity/Editor/AIagent.cs 复制到你项目的 Assets/Editor 文件夹（如不存在则创建）。
+将 Unity/Editor/AI_agent.cs 复制到你项目的 Assets/Editor 文件夹（如不存在则创建）。
 
 ### 5 导入测试脚本
 
@@ -110,95 +108,80 @@ export HF\_ENDPOINT=https://hf-mirror.com
 ### 6 配置项目规范
 
 系统需要知道你项目中的资源位置（如敌人预制体路径）。在 knowledge/ 目录下：
-复制 projectrules.example.md 为 projectrules.md。
-根据你的项目实际情况，修改 projectrules.md 中的路径和规范（例如将 Assets/Prefab/Enemy/Skeleton.prefab 改为你项目中的实际路径）。
+复制 project_rules.example.md 为 project_rules.md。
+根据你的项目实际情况，修改 project_rules.md 中的路径和规范（例如将 Assets/Prefab/Enemy/Skeleton.prefab 改为你项目中的实际路径）。
 
 ### 7 运行
 
-Unity 端：打开 Unity 编辑器，菜单栏点击 Tools → AI Agent，在打开的窗口中点击“启动服务”。
 Python 端：在终端运行：
 
 ```bash
-python src/main.py
+python -m uvicorn src.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-开始对话：在 Unity 窗口的输入框中输入指令，例如“创建一个红色立方体”，观察结果。
+启动后，Unity 端通过你的编辑器扩展向 `POST /execute` 发送请求即可。
 
-📋 示例指令
-
-
-| 用户指令                              | 系统行为                                           |
-| --------------------------------- | ---------------------------------------------- |
-| `创建一个红色立方体`                       | 创建 Cube -> 创建材质 -> 设置颜色 -> 应用材质                |
-| `创建一个等级 3 的敌人 e2`                 | 读取 RAG 规范 -> 实例化预制体 -> 挂载脚本 -> 设置Health/Attack |
-| `复制 e2 两次，分别移到 (0,2,0) 和 (2,2,0)` | 批量复制 -> 逐个修改坐标                                 |
-| `将 e2 的攻击力改为 20`                  | 查找对象 -> 定位脚本组件 -> 修改字段值                        |
-| `生成 3x3x3 魔方，间隔 2 米`              | 循环规划 27 次创建任务 -> 分批发送执行                        |
-
-
-💡 所有指令均支持自然语言变体，系统会自动理解意图。
-
-📁 项目结构  
+📁 项目结构
 
 ```text
-unity-ai-agent/
-├── src/ # Python 端核心代码
-│   ├── main.py                             # FastAPI 入口（HTTP 服务）
-│   ├── agent_planner.py                    # Agent 规划核心逻辑
-│   ├── rag.py                              # RAG 初始化与检索
-│   └── protocol.py                         # Pydantic 数据模型
-├── tools/                                  # 工具注册与实现
-│   ├── __init__.py
-│   ├── export_docs.py                      # 生成工具列表供 LLM 使用
-│   ├── registry.py                         # 工具注册中心
-│   └── unity_tools.py                      # 具体工具函数
-├── knowledge/                              # RAG 知识库
-│   ├── project_rules.example.md            # 示例规范文件（用户需复制修改）
-│   └── project_rules.md                    # 实际使用的规范文件（由用户创建）
-├── Unity/                                  # Unity 端脚本
+Unity-NLP/
+├── src/                      # Python 端核心代码
+│   ├── agent_planner.py      # LLM 调用与规划入口
+│   ├── graph_agent.py        # LangGraph 组图与路由
+│   ├── graph_nodes.py        # retrieve / plan / validate / finish 节点
+│   ├── graph_state.py        # 图状态定义
+│   ├── main.py               # FastAPI 服务入口
+│   ├── protocol.py           # Pydantic 数据模型
+│   └── rag.py                # 向量库初始化
+├── tools/                    # 工具注册与实现（Python 包）
+│   ├── export_docs.py        # 生成工具列表供 LLM 使用
+│   ├── registry.py           # 工具注册中心
+│   ├── schemas.py            # 工具参数 schema 导出
+│   └── unity_tools.py        # 具体工具函数
+├── knowledge/                # RAG 知识库
+│   ├── project_rules.example.md  # 示例规范文件（用户需复制修改）
+│   ├── project_rules.md           # 实际使用的规范文件（由用户创建）
+│   └── TOOLS.md                   # 工具文档
+├── plan/                     # 设计说明
+│   └── LangGraph.md          # LangGraph 升级说明
+├── Unity/                    # Unity 端脚本
 │   ├── Editor/
-│   │   └── AI_agent.cs                     # 编辑器窗口脚本
-│   └── Scripts/
-│       ├── StatesController.cs             # 角色状态示例脚本
-│       └── Rotate.cs                       # 物体旋转示例脚本
-├── .env.example
-├── .gitignore
-├── requirements.txt
-└── README.md
+│   │   └── AI_agent.cs       # 编辑器窗口脚本
+│   └── Script/
+│       ├── StatesController.cs    # 示例脚本
+│       └── Rotate.cs              # 示例物体旋转脚本
+├── .env.example              # 环境变量模板
+├── .gitignore                # Git 忽略文件
+├── requirements.txt          # Python 依赖
+└── README.md                 # 本文件
 ```
 
 🔧 自定义与扩展
 
-添加新工具
+添加新工具：
 
-1. 在 tools/unitytools.py 中用 @registry.register 装饰器注册新函数。
-2. 函数需返回 {"action": "工具名", "params": {...}} 格式。
-3. 在 Unity 端的 ExecuteTool 中添加对应的 case 实现具体操作。
-4. 重新运行程序，新工具会自动出现在 LLM 的工具列表中。
+- 在 `tools/unity_tools.py` 中用 `@registry.register` 装饰器注册新函数
+- 在 `src/protocol.py` 中补充对应的参数模型
+- 重新导出工具 schema 后，新工具会自动进入 LLM 可用工具列表
 
-修改知识库
+修改知识库：
 
-projectrules.md 中的内容会被动态注入系统提示，你可以根据项目需求自由增删规范条目。格式为 Markdown，建议保持简洁。
+- `knowledge/project_rules.md` 中的内容会被动态检索并注入规划流程，你可以根据项目需求自由增删规范条目。建议保持简洁、可执行。
 
 🤝 贡献指南
-
 欢迎任何形式的贡献！如果你发现 bug 或有新功能建议，请：
-
-- 在 GitHub Issues 中搜索是否已存在相关讨论。   
-- 若无，请新建 Issue，清晰描述问题或建议。  
-- 如果你想直接提交代码，请 fork 仓库，创建新分支，提交 Pull Request。
+在 GitHub Issues 中搜索是否已存在相关讨论。
+若无，请新建 Issue，清晰描述问题或建议。
+如果你想直接提交代码，请 fork 仓库，创建新分支，提交 Pull Request。
 
 📄 许可证
-
 本项目采用 MIT 许可证，详情请见 LICENSE 文件。
 
 🙏 致谢
-
-LLM Providers: Qwen, DeepSeek  
-Frameworks: LangChain, Chroma, Pydantic  
-Community: 感谢所有开源贡献者  
+LLM Providers: Qwen, DeepSeek
+Frameworks: LangChain, Chroma, Pydantic
+Community: 感谢所有开源贡献者
 
 📌 注意
-
-请勿将你的 API Key 提交到 GitHub，务必在 .gitignore 中忽略 .env 文件。  
-所有免费素材（如敌人模型）请用户自行下载，本项目仅提供示例路径，不包含任何可能侵权的资源。  
+请勿将你的 API Key 提交到 GitHub，务必在 .gitignore 中忽略 .env 文件。
+所有免费素材（如敌人模型）请用户自行下载，本项目仅提供示例路径，不包含任何可能侵权的资源。

@@ -1,6 +1,14 @@
 import uuid
-from typing import List, Optional, Literal, Any,Union
-from pydantic import BaseModel, Field, model_validator,field_validator
+from datetime import datetime, timezone
+from typing import List, Optional, Literal, Any, Union, Dict
+from pydantic import BaseModel, Field, model_validator, field_validator
+
+
+PROTOCOL_VERSION = "1.0"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 # ==================== 物体操作 ====================
@@ -78,9 +86,6 @@ class CreatePrefabArgs(BaseModel):
     localRotation: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
     localScale: List[float] = Field(default_factory=lambda: [1.0, 1.0, 1.0])
 
-class EchoArgs(BaseModel):
-    text: str
-
 # ==================== 对话消息参数模型 ====================
 class SystemMessage(BaseModel):
     role: Literal["system"] = "system"
@@ -115,12 +120,35 @@ class ToolMessage(BaseModel):
 # 联合类型，表示任意消息
 Message = Union[SystemMessage, UserMessage, AssistantMessage, ToolMessage]
 
+
+class ProtocolEnvelope(BaseModel):
+    protocol_version: str = PROTOCOL_VERSION
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: str = Field(default_factory=_utc_now_iso)
+    message_type: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RequestEnvelope(ProtocolEnvelope):
+    message_type: str = "user_request"
+    history: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ErrorEnvelope(ProtocolEnvelope):
+    message_type: str = "error"
+    error_code: str = "UNKNOWN_ERROR"
+    error_message: str = ""
+    recoverable: bool = False
+    suggested_action: Optional[str] = None
+
 class ToolCall(BaseModel):
     """
     这是 LLM 返回的标准结构
     对应 OpenAI 的 tool_calls 格式
     """
     # 工具名称 对应action
+    id: Optional[str] = None
     name: Literal[
         "create_object",
         "delete_object",
@@ -133,7 +161,6 @@ class ToolCall(BaseModel):
         "attach_script",
         "modify_script_properties",
         "create_prefab",
-        "echo"
     ]
     # 具体参数，这里用 Dict 接收，后续再根据 name 解析
     arguments: Union[
@@ -148,7 +175,6 @@ class ToolCall(BaseModel):
         AttachScriptArgs,
         ModifyScriptPropertiesArgs,
         CreatePrefabArgs,
-        EchoArgs,
         dict[str, Any]
     ]
 
@@ -197,10 +223,15 @@ class AgentResponse(BaseModel):
     """
     这是 Python 发给 Unity 的最终结构
     """
+    protocol_version: str = PROTOCOL_VERSION
     session_id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))
+    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: str = Field(default_factory=_utc_now_iso)
+    message_type: Literal["planning_result", "final_reply", "error"] = "planning_result"
     thoughts: Optional[str] = None      # 思考过程
-    tool_calls: List[ToolCall] = Field(default_factory=list)        # 工具调用列表
+    tool_calls: List[ToolCall] = Field(default_factory=list)       # 工具调用列表
     content: Optional[str] = None       # 给用户的自然语言回复（如果没有工具调用）
+    payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ==================== 验证器 ====================
@@ -218,7 +249,6 @@ TOOL_ARG_MAP = {
     "attach_script": AttachScriptArgs,
     "modify_script_properties": ModifyScriptPropertiesArgs,
     "create_prefab": CreatePrefabArgs,
-    "echo": EchoArgs
 }
 
 
@@ -230,10 +260,18 @@ def validate_tool_calls(response: AgentResponse):
         if arg_model:
             try:
                 # 自动校验参数，把 dict 转成对应的 Pydantic 对象
-                validated_args = arg_model(**call.arguments)
+                if isinstance(call.arguments, BaseModel):
+                    raw_args = call.arguments.model_dump()
+                else:
+                    raw_args = call.arguments
+
+                if isinstance(raw_args, dict):
+                    validated_args = arg_model(**raw_args)
+                else:
+                    continue
                 validated_tools.append({
                     "name": call.name,
-                    "args": validated_args.model_dump()
+                    "arguments": validated_args.model_dump()
                 })
             except Exception as e:
                 print(f"❌ 参数校验失败 {call.name}: {e}")
