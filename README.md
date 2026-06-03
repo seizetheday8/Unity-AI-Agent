@@ -48,7 +48,7 @@ Unity AI Agent 是一个基于 LLM 的 Unity 编辑器 Agent。
 
 ```bash
 git clone https://github.com/seizetheday8/Unity-AI-Agent.git
-cd unity-ai-agent
+cd Unity-AI-Agent
 ```
 
 ### 2 配置 Python 环境
